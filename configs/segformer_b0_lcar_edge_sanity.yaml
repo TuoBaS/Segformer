@@ -1,0 +1,22 @@
+_base_: segformer_b0_lcar_edge.yaml
+
+work_dir: checkpoints/b0_lcar_edge_sanity
+
+model:
+  variant: b0_lcar_edge_sanity
+
+runner:
+  max_iters: 4000
+  checkpoint_interval: 4000
+  eval_interval: 4000
+  log_interval: 50
+
+data:
+  val_batch_size: 8
+
+evaluation:
+  max_batches: 50
+
+wandb:
+  enabled: false
+  log_images: false

@@ -1,0 +1,45 @@
+# ============================================================
+# SegFormer-B5 配置 (ADE20K, 640x640, 160K iterations)
+# 最大变体: 82.0M 参数
+# 官方 mIoU (ss): 49.0%  |  mIoU (ms+flip): 50.4%
+# ============================================================
+# 注意: B5 的 crop_size 为 640 (非 512), img_scale 也相应调整
+_base_: configs/_base_.yaml
+
+model:
+  variant: b5
+  img_size: 640                  # B5 使用 640 而非 512
+  num_classes: 150
+  encoder_pretrained: true
+
+  # MiT-B5 编码器参数 (对齐官方 mit_b5)
+  # 与 B4 的区别: depths 从 [3,8,27,3] → [3,6,40,3] (Stage 3 继续加深)
+  encoder:
+    embed_dims: [64, 128, 320, 512]
+    num_heads: [1, 2, 5, 8]
+    depths: [3, 6, 40, 3]
+    sr_ratios: [8, 4, 2, 1]
+    mlp_ratios: [4, 4, 4, 4]
+    drop_path_rate: 0.1
+
+  # All-MLP Decoder 参数
+  decoder:
+    decoder_dim: 768
+    dropout_ratio: 0.1
+
+data:
+  train:
+    img_dir: data/ADEChallengeData2016/images/training
+    mask_dir: data/ADEChallengeData2016/annotations/training
+  val:
+    img_dir: data/ADEChallengeData2016/images/validation
+    mask_dir: data/ADEChallengeData2016/annotations/validation
+  batch_size: 2
+  num_workers: 4
+  crop_size: 640                 # B5 专用: 640x640
+  reduce_zero_label: true
+
+# B5 覆盖 augmentation 中的 img_scale
+augmentation:
+  train:
+    img_scale: [2048, 640]       # 短边基准从 512 改为 640

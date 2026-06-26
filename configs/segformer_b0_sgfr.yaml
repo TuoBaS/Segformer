@@ -1,0 +1,11 @@
+_base_: segformer_b0.yaml
+
+work_dir: checkpoints/b0_sgfr
+
+model:
+  variant: b0_sgfr
+  decoder:
+    context_gate: true
+    context_reduction: 4
+    refine: false
+    edge_head: false

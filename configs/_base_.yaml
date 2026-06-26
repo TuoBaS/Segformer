@@ -1,0 +1,86 @@
+# ============================================================
+# SegFormer 基础配置 (所有 B0-B5 变体共享)
+# 对齐官方 NVlabs/SegFormer ADE20K 训练配置
+# 各变体文件 (segformer_b0.yaml 等) 会覆盖此处 model 相关参数
+# ============================================================
+
+# ---------- 通用设置 ----------
+seed: 42
+work_dir: checkpoints
+
+# ---------- 优化器 (对齐官方 schedule_160k_adamw.py) ----------
+optimizer:
+  type: AdamW
+  lr: 0.00006                    # 6e-5, 官方所有变体统一使用
+  betas: [0.9, 0.999]
+  weight_decay: 0.01
+  # 参数组特殊配置 (对齐官方 paramwise_cfg)
+  paramwise:
+    pos_block_decay_mult: 0.0    # 位置编码块不加 weight decay
+    norm_decay_mult: 0.0         # Norm 层不加 weight decay
+    head_lr_mult: 10.0           # Decoder head 学习率 x10
+
+# ---------- 学习率调度 (polynomial decay + linear warmup) ----------
+lr_scheduler:
+  policy: poly
+  power: 1.0                     # 线性衰减 (power=1.0)
+  min_lr: 0.0
+  warmup: linear
+  warmup_iters: 1500
+  warmup_ratio: 0.000001         # 1e-6
+
+# ---------- 训练运行配置 ----------
+runner:
+  max_iters: 427000              # batch=6 需 ~427K iter 匹配官方 batch=16 × 160K 的训练量
+  checkpoint_interval: 4000      # 每 4K iter 保存一次 checkpoint
+  eval_interval: 16000           # 每 16K iter 评估一次 mIoU
+  log_interval: 50               # 每 50 iter 打印一次日志
+
+# ---------- 数据增强 (对齐官方 ade20k_repeat.py pipeline) ----------
+# 训练 pipeline:
+#   1. LoadImage (BGR → RGB)
+#   2. LoadAnnotation (reduce_zero_label=True)
+#   3. RandomResize (ratio_range=[0.5, 2.0], short_size=512)
+#   4. RandomCrop (crop_size, cat_max_ratio=0.75)
+#   5. RandomFlip (prob=0.5)
+#   6. PhotoMetricDistortion
+#   7. Normalize (ImageNet mean/std)
+#   8. Pad (pad_val=0, seg_pad_val=255)
+augmentation:
+  train:
+    img_scale: [2048, 512]       # [长边上限, 短边基准]
+    ratio_range: [0.5, 2.0]
+    flip_prob: 0.5
+    photo_distortion: true
+  val:
+    img_scale: [2048, 512]
+    keep_ratio: true
+  # ImageNet 归一化常量 ([0,1] 尺度, albumentations 内部自动 ×255)
+  normalize:
+    mean: [0.485, 0.456, 0.406]
+    std: [0.229, 0.224, 0.225]
+
+# ---------- 损失函数 ----------
+loss:
+  type: CrossEntropyLoss
+  use_sigmoid: false
+  loss_weight: 1.0
+  ignore_index: 255              # 背景/无效像素标签
+
+# ---------- 评估协议 ----------
+evaluation:
+  metric: mIoU
+  # 多尺度 + 翻转评估 (可选, 用于最终报告)
+  multi_scale:
+    enabled: false
+    scales: [0.5, 0.75, 1.0, 1.25, 1.5, 1.75]
+    flip: true
+
+# ---------- 混合精度训练 (A100 推荐开启, 加速 1.5-2x) ----------
+amp:
+  enabled: true
+
+# 测试数据集
+data:
+  test:
+    img_dir: data/ADE20K_TestData/testing

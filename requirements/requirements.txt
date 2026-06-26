@@ -1,0 +1,18 @@
+# =============================================================
+# SegFormer (PyTorch) - Python Dependencies
+# =============================================================
+# Python >= 3.8
+#
+# PyTorch 需根据 CUDA 版本单独安装:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+# =============================================================
+
+torch>=2.0.0
+numpy>=2.2.0
+Pillow>=9.3.0
+PyYAML>=6.0
+wandb>=0.27.0
+tqdm>=4.64.0
+timm>=1.0.0
+albumentations>=2.0.0
+opencv-python>=4.10.0

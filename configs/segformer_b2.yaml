@@ -1,0 +1,39 @@
+# ============================================================
+# SegFormer-B2 配置 (ADE20K, 512x512, 160K iterations)
+# 中等变体: 25.4M 参数
+# 官方 mIoU (ss): 44.0%  |  mIoU (ms+flip): 45.6%
+# ============================================================
+_base_: configs/_base_.yaml
+
+model:
+  variant: b2
+  img_size: 512
+  num_classes: 150
+  encoder_pretrained: true
+
+  # MiT-B2 编码器参数 (对齐官方 mit_b2)
+  # 与 B1 的区别: depths 从 [2,2,2,2] → [3,4,6,3]
+  encoder:
+    embed_dims: [64, 128, 320, 512]
+    num_heads: [1, 2, 5, 8]
+    depths: [3, 4, 6, 3]
+    sr_ratios: [8, 4, 2, 1]
+    mlp_ratios: [4, 4, 4, 4]
+    drop_path_rate: 0.1
+
+  # All-MLP Decoder 参数
+  decoder:
+    decoder_dim: 768             # B2-B5 使用 768
+    dropout_ratio: 0.1
+
+data:
+  train:
+    img_dir: data/ADEChallengeData2016/images/training
+    mask_dir: data/ADEChallengeData2016/annotations/training
+  val:
+    img_dir: data/ADEChallengeData2016/images/validation
+    mask_dir: data/ADEChallengeData2016/annotations/validation
+  batch_size: 2
+  num_workers: 4
+  crop_size: 512
+  reduce_zero_label: true

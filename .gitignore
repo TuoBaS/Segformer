@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.log
+
+checkpoints/
+outputs/
+wandb/
+
+data/
+pretrained/
+
+.env
+.venv/
+venv/
+.idea/
+.vscode/

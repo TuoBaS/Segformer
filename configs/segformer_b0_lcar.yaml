@@ -1,0 +1,12 @@
+_base_: segformer_b0.yaml
+
+work_dir: checkpoints/b0_lcar
+
+model:
+  variant: b0_lcar
+  decoder:
+    context_gate: true
+    context_reduction: 4
+    refine: true
+    refine_dilations: [1, 3, 5]
+    edge_head: false
