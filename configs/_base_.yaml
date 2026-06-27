@@ -35,6 +35,8 @@ runner:
   checkpoint_interval: 4000      # 每 4K iter 保存一次 checkpoint
   eval_interval: 16000           # 每 16K iter 评估一次 mIoU
   log_interval: 50               # 每 50 iter 打印一次日志
+  final_eval: true               # max_iters 不能整除 eval_interval 时，训练结束后补一次验证
+  save_final_checkpoint: true    # 始终保存 *_final.pth，避免末次迭代没有对应权重
 
 # ---------- 数据增强 (对齐官方 ade20k_repeat.py pipeline) ----------
 # 训练 pipeline:

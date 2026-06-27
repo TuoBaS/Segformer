@@ -9,17 +9,17 @@ if _ROOT_DIR not in sys.path:
 import argparse
 import logging
 import torch
-import yaml
 import numpy as np
 import wandb
 from tqdm import tqdm
 from torch.nn import CrossEntropyLoss
 from torch.nn import functional as F
 
-from models.segmentor import SegFormer
 from data_process.builder import build_train_dataloader, build_val_dataloader
 from evaluate import evaluate
 from utils.boundary import compute_boundary_target
+from utils.config import load_config
+from utils.model_utils import build_model_from_config
 from utils.reproducibility import seed_everything
 
 
@@ -163,6 +163,19 @@ def build_optimizer(model, opt_cfg, model_cfg):
     return optimizer
 
 
+def save_training_checkpoint(model, optimizer, scheduler, iteration, best_mIoU, conf, save_path):
+    ckpt = {
+        'iter': iteration,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict(),
+        'best_mIoU': best_mIoU,
+        'config': conf,
+    }
+    torch.save(ckpt, save_path)
+    return save_path
+
+
 # ============================================================
 # 训练主循环 (Iteration-based)
 # ============================================================
@@ -181,6 +194,8 @@ def train(device, model, conf, checkpoint_dict=None):
     checkpoint_interval = runner_cfg.get('checkpoint_interval', 4000)
     eval_interval = runner_cfg.get('eval_interval', 16000)
     log_interval = runner_cfg.get('log_interval', 50)
+    final_eval = runner_cfg.get('final_eval', True)
+    save_final_checkpoint = runner_cfg.get('save_final_checkpoint', True)
 
     work_dir = conf.get('work_dir', 'checkpoints')
     os.makedirs(work_dir, exist_ok=True)
@@ -248,7 +263,8 @@ def train(device, model, conf, checkpoint_dict=None):
 
     # ---- 混合精度 (可选) ----
     amp_enabled = conf.get('amp', {}).get('enabled', False)
-    scaler = torch.amp.GradScaler(enabled=amp_enabled)
+    autocast_enabled = amp_enabled and device.type == 'cuda'
+    scaler = torch.amp.GradScaler(enabled=autocast_enabled)
 
     # ⭐6、WandB ----
     variant = model_cfg.get('variant', 'b0')
@@ -270,6 +286,7 @@ def train(device, model, conf, checkpoint_dict=None):
     train_iter = iter(train_loader)
     running_loss = 0.0
     running_edge_loss = 0.0
+    last_eval_iter = start_iter if start_iter % eval_interval == 0 else 0
     last_images = None   # 保留最后一个 batch 用于可视化
     last_masks = None
 
@@ -291,9 +308,9 @@ def train(device, model, conf, checkpoint_dict=None):
         last_masks = masks
 
         # 前向 + 反向
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
         edge_loss_value = 0.0
-        with torch.amp.autocast(device_type='cuda', enabled=amp_enabled):
+        with torch.amp.autocast(device_type=device.type, enabled=autocast_enabled):
             outputs = model(images, return_aux=edge_aux_enabled)
             seg_logits = outputs['seg'] if isinstance(outputs, dict) else outputs
             loss = criterion(seg_logits, masks)
@@ -327,28 +344,31 @@ def train(device, model, conf, checkpoint_dict=None):
 
         # ---- 日志 ----
         if (current_iter + 1) % log_interval == 0:
+            iter_num = current_iter + 1
             avg_loss = running_loss / log_interval
             avg_edge_loss = running_edge_loss / log_interval
             lr = optimizer.param_groups[0]['lr']
-            logging.info(f'Iter [{current_iter + 1}/{max_iters}] loss={avg_loss:.4f} edge={avg_edge_loss:.4f} lr={lr:.6f}')
+            logging.info(f'Iter [{iter_num}/{max_iters}] loss={avg_loss:.4f} edge={avg_edge_loss:.4f} lr={lr:.6f}')
             log_dict = {'train/loss': avg_loss, 'train/lr': lr}
             if edge_aux_enabled:
                 log_dict['train/edge_loss'] = avg_edge_loss
             if wandb_enabled:
-                wandb.log(log_dict, step=current_iter)
+                wandb.log(log_dict, step=iter_num)
             running_loss = 0.0
             running_edge_loss = 0.0
 
         # ---- 定期评估 & 保存 ----
         if (current_iter + 1) % eval_interval == 0:
+            iter_num = current_iter + 1
             metrics = evaluate(model, val_loader, device,
                                num_classes=model_cfg['num_classes'],
-                               amp_enabled=amp_enabled,
+                               amp_enabled=autocast_enabled,
                                max_batches=eval_cfg.get('max_batches', None))
             val_mIoU = metrics['Mean IoU']
-            logging.info(f'Eval @ Iter {current_iter + 1}: mIoU={val_mIoU:.4f} (best={best_mIoU:.4f})')
+            last_eval_iter = iter_num
+            logging.info(f'Eval @ Iter {iter_num}: mIoU={val_mIoU:.4f} (best={best_mIoU:.4f})')
             if wandb_enabled:
-                wandb.log({'val/mIoU': val_mIoU, **{f'val/{k}': v for k, v in metrics.items()}}, step=current_iter)
+                wandb.log({'val/mIoU': val_mIoU, **{f'val/{k}': v for k, v in metrics.items()}}, step=iter_num)
 
             # ---- Wandb 可视化: 原图 / 真实 mask / 预测 mask ----
             if wandb_enabled and wandb_log_images and last_images is not None:
@@ -390,7 +410,7 @@ def train(device, model, conf, checkpoint_dict=None):
                         'Original': wandb.Image(img_vis),
                         'Ground_Truth': wandb.Image(gt_vis),
                         'Prediction': wandb.Image(pred_vis),
-                    }, step=current_iter)
+                    }, step=iter_num)
 
                     model.train()
                 except Exception as e:
@@ -400,32 +420,37 @@ def train(device, model, conf, checkpoint_dict=None):
             # 保存最优 checkpoint
             if val_mIoU > best_mIoU:
                 best_mIoU = val_mIoU
-                ckpt = {
-                    'iter': current_iter + 1,
-                    'model_state_dict': model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'scheduler_state_dict': scheduler.state_dict(),
-                    'best_mIoU': best_mIoU,
-                    'config': conf,
-                }
                 save_path = os.path.join(work_dir, f'segformer_{variant}_best.pth')
-                torch.save(ckpt, save_path)
+                save_training_checkpoint(model, optimizer, scheduler, iter_num, best_mIoU, conf, save_path)
                 logging.info(f'已保存最优模型: {save_path}')
 
             model.train()
 
         # 定期保存 checkpoint (非最优)
         if (current_iter + 1) % checkpoint_interval == 0:
-            ckpt = {
-                'iter': current_iter + 1,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler_state_dict': scheduler.state_dict(),
-                'best_mIoU': best_mIoU,
-                'config': conf,
-            }
-            save_path = os.path.join(work_dir, f'segformer_{variant}_iter{current_iter + 1}.pth')
-            torch.save(ckpt, save_path)
+            iter_num = current_iter + 1
+            save_path = os.path.join(work_dir, f'segformer_{variant}_iter{iter_num}.pth')
+            save_training_checkpoint(model, optimizer, scheduler, iter_num, best_mIoU, conf, save_path)
+
+    if final_eval and max_iters != last_eval_iter:
+        metrics = evaluate(model, val_loader, device,
+                           num_classes=model_cfg['num_classes'],
+                           amp_enabled=autocast_enabled,
+                           max_batches=eval_cfg.get('max_batches', None))
+        val_mIoU = metrics['Mean IoU']
+        logging.info(f'Final Eval @ Iter {max_iters}: mIoU={val_mIoU:.4f} (best={best_mIoU:.4f})')
+        if wandb_enabled:
+            wandb.log({'val/final_mIoU': val_mIoU, **{f'val/final_{k}': v for k, v in metrics.items()}}, step=max_iters)
+        if val_mIoU > best_mIoU:
+            best_mIoU = val_mIoU
+            save_path = os.path.join(work_dir, f'segformer_{variant}_best.pth')
+            save_training_checkpoint(model, optimizer, scheduler, max_iters, best_mIoU, conf, save_path)
+            logging.info(f'已保存最优模型: {save_path}')
+
+    if save_final_checkpoint:
+        final_path = os.path.join(work_dir, f'segformer_{variant}_final.pth')
+        save_training_checkpoint(model, optimizer, scheduler, max_iters, best_mIoU, conf, final_path)
+        logging.info(f'已保存最终模型: {final_path}')
 
     # ---- 训练结束 ----
     logging.info(f'训练完成! 最终 best mIoU = {best_mIoU:.4f}')
@@ -439,32 +464,6 @@ def get_args():
     parser.add_argument('--config', type=str, default='configs/segformer_b0.yaml')
     parser.add_argument('--load', type=str, default=None, help='断点恢复或加载已训练模型的 checkpoint 路径')
     return parser.parse_args()
-
-def load_config(config_path):
-    with open(config_path, 'r', encoding='utf-8') as f:
-        conf = yaml.safe_load(f)
-
-    # 如果有 _base_ 字段，递归加载基础配置并合并
-    if '_base_' in conf:
-        base_path = conf.pop('_base_')
-        # 相对于当前配置文件目录解析路径
-        base_dir = os.path.dirname(os.path.abspath(config_path))
-        base_full_path = os.path.join(base_dir, base_path)
-        base_conf = load_config(base_full_path)
-        # 深度合并: variant config 覆盖 base config
-        conf = deep_merge(base_conf, conf)
-
-    return conf
-
-def deep_merge(base, override):
-    """深度合并两个字典，override 覆盖 base"""
-    merged = base.copy()
-    for key, value in override.items():
-        if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
-            merged[key] = deep_merge(merged[key], value)
-        else:
-            merged[key] = value
-    return merged
 
 if __name__ == '__main__':
     # 设置日志格式
@@ -480,15 +479,7 @@ if __name__ == '__main__':
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logging.info(f'Using device: {device}')
 
-    # 构建模型: 将 YAML 中的 encoder 和 decoder 配置分别传入
-    model = SegFormer(
-        img_size=model_cfg.get('img_size', 512),
-        num_classes=model_cfg.get('num_classes', 150),
-        encoder_pretrained=model_cfg.get('encoder_pretrained', True),
-        encoder_config=model_cfg['encoder'],
-        decoder_config=model_cfg['decoder'],
-    )
-    model = model.to(device=device)
+    model = build_model_from_config(conf).to(device=device)
 
     # 断点恢复 / 加载权重
     checkpoint_dict = None
@@ -514,3 +505,4 @@ if __name__ == '__main__':
     except torch.cuda.OutOfMemoryError:
         logging.error('GPU OutOfMemoryError! 尝试清空缓存...')
         torch.cuda.empty_cache()
+        raise
