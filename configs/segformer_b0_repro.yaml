@@ -1,0 +1,4 @@
+_base_: segformer_b0.yaml
+
+# Re-run the calibrated B0 baseline without overwriting older baseline checkpoints.
+work_dir: checkpoints/b0_repro
