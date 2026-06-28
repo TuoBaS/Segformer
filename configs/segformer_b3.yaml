@@ -3,7 +3,7 @@
 # 较大变体: 45.2M 参数
 # 官方 mIoU (ss): 46.3%  |  mIoU (ms+flip): 47.9%
 # ============================================================
-_base_: configs/_base_.yaml
+_base_: _base_.yaml
 
 model:
   variant: b3

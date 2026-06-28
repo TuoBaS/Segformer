@@ -3,7 +3,7 @@
 # 轻量变体: 14.0M 参数
 # 官方 mIoU (ss): 41.0%  |  mIoU (ms+flip): 42.2%
 # ============================================================
-_base_: configs/_base_.yaml
+_base_: _base_.yaml
 
 model:
   variant: b1

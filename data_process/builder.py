@@ -47,6 +47,11 @@ def build_train_dataloader(
     num_workers=4,
     crop_size=512,
     img_scale=(2048, 512),
+    ratio_range=(0.5, 2.0),
+    flip_prob=0.5,
+    photo_distortion=True,
+    normalize=None,
+    cat_max_ratio=0.75,
     reduce_zero_label=True,
     pin_memory=True,
     seed=None,
@@ -54,7 +59,15 @@ def build_train_dataloader(
     dataset = ADE20KDataset(
         img_dir=img_dir,
         mask_dir=mask_dir,
-        transforms=get_train_transforms(crop_size=crop_size, img_scale=img_scale),
+        transforms=get_train_transforms(
+            crop_size=crop_size,
+            img_scale=img_scale,
+            ratio_range=ratio_range,
+            flip_prob=flip_prob,
+            photo_distortion=photo_distortion,
+            normalize=normalize,
+            cat_max_ratio=cat_max_ratio,
+        ),
         reduce_zero_label=reduce_zero_label,
     )
 
@@ -77,6 +90,7 @@ def build_val_dataloader(
     batch_size=2,
     num_workers=4,
     img_scale=(2048, 512),
+    normalize=None,
     reduce_zero_label=True,
     pin_memory=True,
     seed=None,
@@ -84,7 +98,7 @@ def build_val_dataloader(
     dataset = ADE20KDataset(
         img_dir=img_dir,
         mask_dir=mask_dir,
-        transforms=get_val_transforms(img_scale=img_scale),
+        transforms=get_val_transforms(img_scale=img_scale, normalize=normalize),
         reduce_zero_label=reduce_zero_label,
     )
 

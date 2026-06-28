@@ -54,10 +54,10 @@ def resize_keep_ratio(image, target_short):
     return image.resize((new_w, new_h), Image.BILINEAR)
 
 
-def image_to_tensor(image, divisor=32):
+def image_to_tensor(image, divisor=32, mean=IMAGENET_MEAN, std=IMAGENET_STD):
     arr = np.asarray(image).astype(np.float32) / 255.0
     tensor = torch.from_numpy(arr).permute(2, 0, 1)
-    tensor = (tensor - IMAGENET_MEAN) / IMAGENET_STD
+    tensor = (tensor - mean) / std
 
     h, w = tensor.shape[-2:]
     pad_h = int(np.ceil(h / divisor) * divisor - h)
@@ -68,7 +68,17 @@ def image_to_tensor(image, divisor=32):
 
 
 @torch.no_grad()
-def predict_image(model, image, device, base_short=512, scales=(1.0,), flip=False, amp_enabled=False):
+def predict_image(
+    model,
+    image,
+    device,
+    base_short=512,
+    scales=(1.0,),
+    flip=False,
+    amp_enabled=False,
+    mean=IMAGENET_MEAN,
+    std=IMAGENET_STD,
+):
     orig_w, orig_h = image.size
     logits_sum = None
     num_views = 0
@@ -76,7 +86,7 @@ def predict_image(model, image, device, base_short=512, scales=(1.0,), flip=Fals
     for scale in scales:
         target_short = max(1, int(round(base_short * scale)))
         resized = resize_keep_ratio(image, target_short)
-        tensor, valid_size = image_to_tensor(resized)
+        tensor, valid_size = image_to_tensor(resized, mean=mean, std=std)
         tensor = tensor.to(device)
 
         with torch.autocast(device_type="cuda", enabled=amp_enabled and device.type == "cuda"):
@@ -127,9 +137,13 @@ def main():
     load_checkpoint(model, args.checkpoint, device=device, strict=args.strict)
     model.eval()
 
-    base_short = conf.get("augmentation", {}).get("val", {}).get("img_scale", [2048, 512])[1]
+    aug_cfg = conf.get("augmentation", {})
+    norm_cfg = aug_cfg.get("normalize", {})
+    base_short = aug_cfg.get("val", {}).get("img_scale", [2048, 512])[1]
     amp_enabled = conf.get("amp", {}).get("enabled", False)
     palette = ade20k_palette(conf["model"].get("num_classes", 150))
+    mean = torch.tensor(norm_cfg.get("mean", IMAGENET_MEAN.tolist())).view(3, 1, 1)
+    std = torch.tensor(norm_cfg.get("std", IMAGENET_STD.tolist())).view(3, 1, 1)
 
     images = list_images(args.input)
     if not images:
@@ -145,6 +159,8 @@ def main():
             scales=args.scales,
             flip=args.flip,
             amp_enabled=amp_enabled,
+            mean=mean,
+            std=std,
         )
         save_prediction(image, mask, image_path, args.output, palette, args.alpha)
         print(f"saved: {image_path}")

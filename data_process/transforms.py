@@ -87,22 +87,25 @@ class RandomResize(A.DualTransform):
     随机缩放 — 对齐官方。
     DualTransform 表示这个变换会同时、同比例地作用于 Image 和 Mask(标签)。
     """
-    def __init__(self, short_size=512, ratio_range=(0.5, 2.0), p=1.0):
+    def __init__(self, short_size=512, long_size=None, ratio_range=(0.5, 2.0), p=1.0):
         super().__init__(p=p)
         self.short_size = short_size # 目标短边长度基准值
+        self.long_size = long_size   # 目标长边上限基准值
         self.ratio_range = ratio_range # 缩放比例的随机范围
 
     def apply(self, img, scale_factor=1.0, **params):
         import cv2
         h, w = img.shape[:2] # 获取原图高宽
-        # 计算出新的短边长度：基准长度 * 随机出来的缩放比例
-        new_short = int(self.short_size * scale_factor)
+        short = min(h, w)
+        long = max(h, w)
+        target_short = self.short_size * scale_factor
+        resize_scale = target_short / short
+        if self.long_size is not None:
+            target_long = self.long_size * scale_factor
+            resize_scale = min(resize_scale, target_long / long)
 
-        # 判断哪条边是短边，按比例计算新的高宽
-        if h < w: # 如果高是短边
-            new_h, new_w = new_short, int(w * new_short / h)
-        else:     # 如果宽是短边或正方形
-            new_w, new_h = new_short, int(h * new_short / w)
+        new_h = max(1, int(round(h * resize_scale)))
+        new_w = max(1, int(round(w * resize_scale)))
         # 对图像进行线性插值缩放
         return cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
 
@@ -110,11 +113,16 @@ class RandomResize(A.DualTransform):
         # 标签 (Mask) 的缩放逻辑与图像完全一致
         import cv2
         h, w = mask.shape[:2]
-        new_short = int(self.short_size * scale_factor)
-        if h < w:
-            new_h, new_w = new_short, int(w * new_short / h)
-        else:
-            new_w, new_h = new_short, int(h * new_short / w)
+        short = min(h, w)
+        long = max(h, w)
+        target_short = self.short_size * scale_factor
+        resize_scale = target_short / short
+        if self.long_size is not None:
+            target_long = self.long_size * scale_factor
+            resize_scale = min(resize_scale, target_long / long)
+
+        new_h = max(1, int(round(h * resize_scale)))
+        new_w = max(1, int(round(w * resize_scale)))
         # 注意：分割 Mask 缩放必须使用最近邻插值 (INTER_NEAREST)！
         # 因为 Mask 里面的值代表类别索引（如 1 代表人, 2 代表车），不能出现 1.5 这种小数。
         return cv2.resize(mask, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
@@ -146,8 +154,8 @@ class PadToSize(A.DualTransform):
             # np.pad 语法：((上, 下), (左, 右), (通道维度不填充))
             img = np.pad(img, ((0, pad_h), (0, pad_w), (0, 0)),
                          mode='constant', constant_values=self.pad_val)
-        # 如果原本图像比目标还大，这里[:target_h, :target_w] 起到了左上角裁剪的作用
-        return img[:target_h, :target_w]
+        # 这里只补小图，不裁剪大图；随机裁剪由 RandomCropWithFilter 负责。
+        return img
 
     def apply_to_mask(self, mask, **params):
         # 对 Mask 执行完全相同的填充逻辑
@@ -159,7 +167,7 @@ class PadToSize(A.DualTransform):
             # Mask 通常是 2D 的，所以只有前两个维度的 padding
             mask = np.pad(mask, ((0, pad_h), (0, pad_w)),
                           mode='constant', constant_values=self.seg_pad_val)
-        return mask[:target_h, :target_w]
+        return mask
 
 
 class RandomCropWithFilter(A.DualTransform):
@@ -221,42 +229,55 @@ class RandomCropWithFilter(A.DualTransform):
 
 # ==================== Pipeline 构建函数 ====================
 
-def get_train_transforms(crop_size=512, img_scale=(2048, 512)):
+def get_train_transforms(
+    crop_size=512,
+    img_scale=(2048, 512),
+    ratio_range=(0.5, 2.0),
+    flip_prob=0.5,
+    photo_distortion=True,
+    normalize=None,
+    cat_max_ratio=0.75,
+):
     """
     暴露给外部调用的函数：获取训练用的数据增强 Pipeline
     """
+    normalize = normalize or {}
     return A.Compose([
         # 1. 随机缩放：保证短边在 512 的 0.5 到 2.0 倍之间波动
-        RandomResize(short_size=img_scale[1], ratio_range=(0.5, 2.0), p=1.0),
+        RandomResize(short_size=img_scale[1], long_size=img_scale[0], ratio_range=ratio_range, p=1.0),
 
-        # 2. 补边：如果缩放后图片不足 512x512，则右方和下方补黑边 (防止下一步裁剪报错)
+        # 2. 随机裁剪：裁出 512x512，如果某个类别占比 >75% 就重裁
+        RandomCropWithFilter(crop_size=crop_size, cat_max_ratio=cat_max_ratio),
+
+        # 3. 随机水平翻转
+        A.HorizontalFlip(p=flip_prob),
+
+        # 4. 光度失真 (模拟亮度/对比度/饱和度/色调的变化)
+        PhotoMetricDistortion(p=0.5 if photo_distortion else 0.0),
+
+        # 5. ImageNet 归一化 (减去均值除以方差，利于模型收敛)
+        A.Normalize(
+            mean=normalize.get("mean", IMAGENET_MEAN),
+            std=normalize.get("std", IMAGENET_STD),
+        ),
+
+        # 6. 补边：仅在裁剪结果小于 crop_size 时补齐，不做左上角裁剪
         PadToSize(size=(crop_size, crop_size), pad_val=0, seg_pad_val=255),
-
-        # 3. 随机裁剪：裁出 512x512，如果某个类别占比 >75% 就重裁
-        RandomCropWithFilter(crop_size=crop_size, cat_max_ratio=0.75),
-
-        # 4. 随机水平翻转 (50% 概率)
-        A.HorizontalFlip(p=0.5),
-
-        # 5. 光度失真 (模拟亮度/对比度/饱和度/色调的变化)
-        PhotoMetricDistortion(p=0.5),
-
-        # 6. ImageNet 归一化 (减去均值除以方差，利于模型收敛)
-        A.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
 
         # 7. 转为 PyTorch 张量格式，并自动将维度从 (H, W, C) 变成 (C, H, W)
         ToTensorV2(),
     ])
 
 
-def get_val_transforms(img_scale=(2048, 512)):
+def get_val_transforms(img_scale=(2048, 512), normalize=None):
     """
     暴露给外部调用的函数：获取验证用的数据处理 Pipeline
     验证集不需要任何随机操作（不能随机裁剪、翻转等），确保每次评估指标一致。
     """
+    normalize = normalize or {}
     return A.Compose([
         # 1. 保持宽高比缩放：将最短边对齐到 512
-        A.SmallestMaxSize(max_size=img_scale[1]),
+        RandomResize(short_size=img_scale[1], long_size=img_scale[0], ratio_range=(1.0, 1.0), p=1.0),
 
         # 2. 补边到 32 的倍数
         # 非常关键：SegFormer(MiT编码器) 会进行 4 次跨步为 2 的下采样 (2*2*2*2 = 16，后续有stride处理总计需要32的倍数对齐)
@@ -268,21 +289,25 @@ def get_val_transforms(img_scale=(2048, 512)):
         ),
 
         # 3. 归一化
-        A.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+        A.Normalize(
+            mean=normalize.get("mean", IMAGENET_MEAN),
+            std=normalize.get("std", IMAGENET_STD),
+        ),
 
         # 4. 转 Tensor
         ToTensorV2(),
     ])
 
 
-def get_test_transforms(scales=(1.0,), flip=False, img_scale=(2048, 512)):
+def get_test_transforms(scales=(1.0,), flip=False, img_scale=(2048, 512), normalize=None):
     """
     多尺度测试 (TTA) pipeline (测试集使用)。
     测试通常和验证类似，但有可能会传入不同的 scale 甚至需要水平翻转，来融合结果。
     """
+    normalize = normalize or {}
     transforms = [
         # 短边缩放
-        A.SmallestMaxSize(max_size=img_scale[1]),
+        RandomResize(short_size=img_scale[1], long_size=img_scale[0], ratio_range=(1.0, 1.0), p=1.0),
         # 对齐 32 倍数
         A.PadIfNeeded(
             min_height=None, min_width=None,
@@ -290,7 +315,10 @@ def get_test_transforms(scales=(1.0,), flip=False, img_scale=(2048, 512)):
             border_mode=0, fill=0, fill_mask=255,
         ),
         # 归一化
-        A.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+        A.Normalize(
+            mean=normalize.get("mean", IMAGENET_MEAN),
+            std=normalize.get("std", IMAGENET_STD),
+        ),
         # 转 Tensor
         ToTensorV2(),
     ]

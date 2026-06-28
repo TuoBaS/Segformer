@@ -333,7 +333,8 @@ class MixVisionTransformer(nn.Module):
         else:
             state_dict = checkpoint
 
-        # 去除 segformer.encoder. 前缀，跳过 classifier 分类头
+        # 去除常见前缀，跳过 classifier 分类头
+        current_state = self.state_dict()
         mapped_state_dict = {}
         skipped_keys = []
 
@@ -341,8 +342,26 @@ class MixVisionTransformer(nn.Module):
             if key.startswith('classifier'):
                 skipped_keys.append(key)
                 continue
+
+            candidate_key = None
             if key.startswith('segformer.encoder.'):
-                mapped_state_dict[key.replace('segformer.encoder.', '', 1)] = value
+                candidate_key = key.replace('segformer.encoder.', '', 1)
+            elif key.startswith('encoder.'):
+                candidate_key = key.replace('encoder.', '', 1)
+            elif key in current_state:
+                candidate_key = key
+
+            if (
+                candidate_key is not None
+                and candidate_key in current_state
+                and current_state[candidate_key].shape == value.shape
+            ):
+                mapped_state_dict[candidate_key] = value
+            else:
+                skipped_keys.append(key)
+
+        if not mapped_state_dict:
+            raise RuntimeError(f'[MiT] No compatible pretrained weights were loaded from: {pretrained}')
 
         # 加载权重
         missing, unexpected = self.load_state_dict(mapped_state_dict, strict=False)
@@ -356,7 +375,7 @@ class MixVisionTransformer(nn.Module):
         if skipped_keys:
             logging.info(f'[MiT] 已跳过分类头权重 ({len(skipped_keys)}): {skipped_keys[:5]}...')
 
-        loaded_count = len(mapped_state_dict) - len(unexpected)
+        loaded_count = len(mapped_state_dict)
         logging.info(f'[MiT] 预训练权重加载完成！成功加载 {loaded_count} 个参数。')
 
     def forward(self, x):

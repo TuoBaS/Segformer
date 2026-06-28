@@ -203,6 +203,9 @@ def train(device, model, conf, checkpoint_dict=None):
     # ⭐2、构建 DataLoader ----
     train_data_cfg = data_cfg['train']
     val_data_cfg = data_cfg['val']
+    train_aug_cfg = aug_cfg.get('train', {})
+    val_aug_cfg = aug_cfg.get('val', {})
+    normalize_cfg = aug_cfg.get('normalize', {})
 
     train_loader = build_train_dataloader(
         img_dir=train_data_cfg['img_dir'],
@@ -210,7 +213,12 @@ def train(device, model, conf, checkpoint_dict=None):
         batch_size=data_cfg.get('batch_size', 2),
         num_workers=data_cfg.get('num_workers', 4),
         crop_size=data_cfg.get('crop_size', 512),
-        img_scale=tuple(aug_cfg.get('train', {}).get('img_scale', [2048, 512])),
+        img_scale=tuple(train_aug_cfg.get('img_scale', [2048, 512])),
+        ratio_range=tuple(train_aug_cfg.get('ratio_range', [0.5, 2.0])),
+        flip_prob=train_aug_cfg.get('flip_prob', 0.5),
+        photo_distortion=train_aug_cfg.get('photo_distortion', True),
+        normalize=normalize_cfg,
+        cat_max_ratio=train_aug_cfg.get('cat_max_ratio', 0.75),
         reduce_zero_label=data_cfg.get('reduce_zero_label', True),
         seed=conf.get('seed', None),
     )
@@ -220,7 +228,8 @@ def train(device, model, conf, checkpoint_dict=None):
         mask_dir=val_data_cfg['mask_dir'],
         batch_size=data_cfg.get('val_batch_size', 2),
         num_workers=data_cfg.get('num_workers', 4),
-        img_scale=tuple(aug_cfg.get('val', {}).get('img_scale', [2048, 512])),
+        img_scale=tuple(val_aug_cfg.get('img_scale', [2048, 512])),
+        normalize=normalize_cfg,
         reduce_zero_label=data_cfg.get('reduce_zero_label', True),
         seed=conf.get('seed', None),
     )

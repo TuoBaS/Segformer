@@ -52,6 +52,7 @@ augmentation:
   train:
     img_scale: [2048, 512]       # [长边上限, 短边基准]
     ratio_range: [0.5, 2.0]
+    cat_max_ratio: 0.75
     flip_prob: 0.5
     photo_distortion: true
   val:

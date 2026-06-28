@@ -10,6 +10,8 @@ The current B0 setting targets the official single-scale ADE20K validation resul
 - MiT encoder and All-MLP decoder implementation.
 - ADE20K train/val dataloaders with `reduce_zero_label=True`.
 - Iteration-based training with AdamW, poly LR, warmup, AMP, checkpointing, and W&B logging.
+- Config-driven ADE20K augmentation pipeline with random resize, random crop, flip,
+  photometric distortion, normalization, and padding.
 - Independent validation CLI.
 - Image/folder inference CLI with raw masks, colored masks, and overlay visualizations.
 - Optional LCAR decoder improvements and edge auxiliary supervision for ablation studies.
@@ -61,6 +63,12 @@ python train.py --config configs/segformer_b0.yaml --load checkpoints/segformer_
 
 The base config uses `seed: 42`. Training now seeds Python, NumPy, PyTorch, CUDA, and
 DataLoader workers.
+
+Validate all runnable configs before starting expensive experiments:
+
+```bash
+python tools/validate_configs.py
+```
 
 ## Proposed Improvement
 

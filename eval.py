@@ -46,12 +46,15 @@ def main():
     data_cfg = conf["data"]
     aug_cfg = conf.get("augmentation", {})
     val_cfg = data_cfg["val"]
+    val_aug_cfg = aug_cfg.get("val", {})
+    normalize_cfg = aug_cfg.get("normalize", {})
     val_loader = build_val_dataloader(
         img_dir=val_cfg["img_dir"],
         mask_dir=val_cfg["mask_dir"],
         batch_size=args.batch_size or data_cfg.get("val_batch_size", 2),
         num_workers=args.num_workers if args.num_workers is not None else data_cfg.get("num_workers", 4),
-        img_scale=tuple(aug_cfg.get("val", {}).get("img_scale", [2048, 512])),
+        img_scale=tuple(val_aug_cfg.get("img_scale", [2048, 512])),
+        normalize=normalize_cfg,
         reduce_zero_label=data_cfg.get("reduce_zero_label", True),
         seed=conf.get("seed", None),
     )
